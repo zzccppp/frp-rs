@@ -1,0 +1,22 @@
+[package]
+name = "frp-rs"
+version = "0.1.0"
+authors = ["ZZDirty <muztaga2@gmail.com>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+log = "0.4"
+env_logger = "0.8.3"
+toml = "0.5"
+serde = { version = "1.0", features = ["derive"] }
+
+[[bin]]
+name = "server"
+path = "src/server/main.rs"
+
+[[bin]]
+name = "client"
+path = "src/client/main.rs"
