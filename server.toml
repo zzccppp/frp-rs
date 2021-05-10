@@ -3,6 +3,6 @@ server_port = 7777
 
 [[client]]
 name = "test"
-port = 10000
+port = 21001
 protocol = "tcp"
 secret_key = "123456"

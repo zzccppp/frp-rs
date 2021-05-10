@@ -1,25 +1,42 @@
+use initialization::{init_logger, read_configuration};
+use log::{error, info};
 use tokio::{
     io::AsyncWriteExt,
-    net::{TcpListener, TcpStream},
+    net::{TcpListener, TcpSocket, TcpStream},
 };
 
-use log::info;
+pub mod initialization;
 
 #[tokio::main]
 pub async fn main() -> Result<(), ()> {
-    let env = env_logger::Env::default()
-        .filter_or("MY_LOG_LEVEL", "debug")
-        .write_style_or("MY_LOG_STYLE", "always");
-    env_logger::init_from_env(env);
+    init_logger();
+    let conf = read_configuration().unwrap();
 
-    let listener = TcpListener::bind("127.0.0.1:12000").await.unwrap();
-    loop {
-        let (stream, addr) = listener.accept().await.unwrap();
-        tokio::spawn(async move {
-            process(stream).await;
+    let mut handles = Vec::new();
+
+    for client in &conf.client {
+        let client = client.clone();
+        let addr_str = conf.server_ip.clone() + ":" + client.remote_port.to_string().as_str();
+        let addr = addr_str.parse().unwrap();
+        let handle = tokio::spawn(async move {
+            let stream = if let Ok(socket) = TcpSocket::new_v4() {
+                let stream = socket.connect(addr).await;
+                if let Err(e) = stream {
+                    error!("Cannot connect to {}", addr.to_string());
+                    error!("{}", e.to_string());
+                    return;
+                }
+                stream.unwrap();
+            } else {
+                error!("Cannot create TcpSocket");
+            };
         });
+        handles.push(handle);
     }
-    //return Ok(());
+    for h in handles {
+        h.await.unwrap();
+    }
+    return Ok(());
 }
 
 pub async fn process(mut socket: TcpStream) {

@@ -9,6 +9,8 @@ use tokio::{
 use crate::initialization::{init_logger, read_server_configuration};
 
 pub mod initialization;
+pub mod register;
+
 #[tokio::main]
 pub async fn main() -> Result<(), ()> {
     init_logger();
@@ -27,5 +29,4 @@ pub async fn main() -> Result<(), ()> {
 
 pub async fn process(mut socket: TcpStream, addr: SocketAddr) {
     info!("Receive Connection from {}", addr);
-    
 }
