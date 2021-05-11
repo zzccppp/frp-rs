@@ -1,4 +1,4 @@
-use log::{error, info, warn};
+use log::{error, info};
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize, Clone)]
