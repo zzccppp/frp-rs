@@ -6,7 +6,7 @@ use register::ConnectionState;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
-    sync::Mutex,
+    sync::{oneshot, Mutex},
 };
 use uuid::Uuid;
 
@@ -112,20 +112,22 @@ pub async fn process(
 
     let (st, ad) = forward_listener.accept().await.unwrap();
     // let mut forward_socket: Arc<Mutex<TcpStream>> = Arc::new(Mutex::new(st));
-    let (forward_read, forward_write) = st.into_split();
-    let forward_read = Arc::new(Mutex::new(forward_read));
-    let forward_write = Arc::new(Mutex::new(forward_write));
+    // let (forward_read, forward_write) = st.into_split();
+    // let forward_read = Arc::new(Mutex::new(forward_read));
+    // let forward_write = Arc::new(Mutex::new(forward_write));
+
+    let mut forward_socket: Arc<Mutex<TcpStream>> = Arc::new(Mutex::new(st));
 
     if ad.ip().eq(&addr.ip()) {
         is_client_conn = true;
     } else {
-        forward_write
+        forward_socket
             .lock()
             .await
             .write(b"Service Unavaliable.\n")
             .await
             .unwrap();
-        forward_write.lock().await.shutdown().await.unwrap();
+        forward_socket.lock().await.shutdown().await.unwrap();
     }
 
     loop {
@@ -134,15 +136,27 @@ pub async fn process(
             st.write(b"Service Unavaliable.\n").await.unwrap();
             st.shutdown().await.unwrap();
         } else {
-            let forward_read = forward_read.clone();
-            let forward_write = forward_write.clone();
-            let (mut read, mut write) = st.into_split();
+            let forward_read = forward_socket.clone();
+            let forward_write = forward_socket.clone();
+            // let (mut read, mut write) = st.into_split();
+            let socket = Arc::new(Mutex::new(st));
+            let socket1 = socket.clone();
             tokio::spawn(async move {
                 let mut buf = [0u8; 512];
+                let socket = socket.clone();
+                let mut n = 0;
                 loop {
-                    let n = read.read(&mut buf).await.unwrap();
+                    // let n = read.read(&mut buf).await.unwrap();
+                    {
+                        if let Ok(e) = socket.lock().await.try_read(&mut buf) {
+                            n = e;
+                        } else {
+                            continue;
+                        }
+                    }
                     debug!("Request read : {}", n);
                     if n == 0 {
+                        socket.lock().await.shutdown().await.unwrap();
                         break;
                     }
                     {
@@ -155,16 +169,29 @@ pub async fn process(
             // let socket = forward_socket.clone();
             tokio::spawn(async move {
                 let mut buf = [0u8; 512];
+                let socket = socket1.clone();
                 loop {
-                    let n;
+                    let mut n = 0;
                     {
-                        n = forward_read.lock().await.read(&mut buf).await.unwrap();
-                        debug!("Client read : {}", n);
+                        // n = forward_read.lock().await.read(&mut buf).await.unwrap();
+                        if let Ok(e) = forward_read.lock().await.try_read(&mut buf) {
+                            n = e;
+                        } else {
+                            continue;
+                        }
                     }
-                    if let Err(e) = write.write(&buf[0..n]).await {
-                        error!("{}", e);
-                        return;
-                    };
+                    debug!("Client read : {}", n);
+                    if n == 0 {
+                        socket.lock().await.shutdown().await.unwrap();
+                        break;
+                    }
+                    // if let Err(e) = write.write(&buf[0..n]).await {
+                    //     error!("{}", e);
+                    //     return;
+                    // };
+                    {
+                        socket.lock().await.write(&buf[0..n]).await.unwrap();
+                    }
                 }
             });
         }

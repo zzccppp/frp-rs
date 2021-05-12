@@ -66,16 +66,20 @@ pub async fn main() -> Result<(), ()> {
                     };
                     let s_read = server_read.clone();
                     let s_write = server_write.clone();
-                    let (mut local_read, mut local_write) = local_conn.into_split();
+                    // let (mut local_read, mut local_write) = local_conn.into_split();
+                    let local_socket = Arc::new(Mutex::new(local_conn));
+                    let local_socket1 = local_socket.clone();
                     let h1 = tokio::spawn(async move {
+                        let socket = local_socket.clone();
                         let mut buf = [0u8; 512];
                         loop {
                             let n = { s_read.lock().await.read(&mut buf).await.unwrap() };
                             debug!("server read {}", n);
                             if n == 0 {
+                                socket.lock().await.shutdown().await.unwrap();
                                 return;
                             }
-                            if let Err(e) = local_write.write(&buf[0..n]).await {
+                            if let Err(e) = socket.lock().await.write(&buf[0..n]).await {
                                 error!("{}",e);
                                 return;
                             };
@@ -83,10 +87,20 @@ pub async fn main() -> Result<(), ()> {
                     });
                     let h2 = tokio::spawn(async move {
                         let mut buf = [0u8; 512];
+                        let socket = local_socket1.clone();
+                        let mut n = 0;
                         loop {
-                            let n = local_read.read(&mut buf).await.unwrap();
+                            // let n = socket.lock().await.read(&mut buf).await.unwrap();
+                            {
+                                if let Ok(e) = socket.lock().await.try_read(&mut buf) {
+                                    n = e;
+                                } else {
+                                    continue;
+                                }
+                            }
                             debug!("local read {}", n);
                             if n == 0 {
+                                socket.lock().await.shutdown().await.unwrap();
                                 return;
                             }
                             {
