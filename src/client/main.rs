@@ -50,7 +50,7 @@ pub async fn main() -> Result<(), ()> {
                         return;
                     }
                 };
-                let (mut server_read, mut server_write) = server_conn.into_split();
+                let (server_read, server_write) = server_conn.into_split();
                 let server_read = Arc::new(Mutex::new(server_read));
                 let server_write = Arc::new(Mutex::new(server_write));
                 loop {
@@ -91,6 +91,7 @@ pub async fn main() -> Result<(), ()> {
                             }
                             {
                                 s_write.lock().await.write(&buf[0..n]).await.unwrap();
+                                debug!("local write {}", n);
                             }
                         }
                     });

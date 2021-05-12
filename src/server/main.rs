@@ -111,20 +111,21 @@ pub async fn process(
     let mut is_client_conn = false;
 
     let (st, ad) = forward_listener.accept().await.unwrap();
-    let mut forward_socket: Arc<Mutex<TcpStream>> = Arc::new(Mutex::new(st));
-
-    // let (forward_read, forward_write) = st.into_split();
+    // let mut forward_socket: Arc<Mutex<TcpStream>> = Arc::new(Mutex::new(st));
+    let (forward_read, forward_write) = st.into_split();
+    let forward_read = Arc::new(Mutex::new(forward_read));
+    let forward_write = Arc::new(Mutex::new(forward_write));
 
     if ad.ip().eq(&addr.ip()) {
         is_client_conn = true;
     } else {
-        forward_socket
+        forward_write
             .lock()
             .await
             .write(b"Service Unavaliable.\n")
             .await
             .unwrap();
-        forward_socket.lock().await.shutdown().await.unwrap();
+        forward_write.lock().await.shutdown().await.unwrap();
     }
 
     loop {
@@ -133,7 +134,8 @@ pub async fn process(
             st.write(b"Service Unavaliable.\n").await.unwrap();
             st.shutdown().await.unwrap();
         } else {
-            let socket = forward_socket.clone();
+            let forward_read = forward_read.clone();
+            let forward_write = forward_write.clone();
             let (mut read, mut write) = st.into_split();
             tokio::spawn(async move {
                 let mut buf = [0u8; 512];
@@ -144,31 +146,20 @@ pub async fn process(
                         break;
                     }
                     {
-                        let mut x = socket.lock().await;
-                        x.write(&buf[0..n]).await.unwrap();
+                        // let mut x = socket.lock().await;
+                        // x.write(&buf[0..n]).await.unwrap();
+                        forward_write.lock().await.write(&buf[0..n]).await.unwrap();
                     }
                 }
             });
-            let socket = forward_socket.clone();
+            // let socket = forward_socket.clone();
             tokio::spawn(async move {
                 let mut buf = [0u8; 512];
                 loop {
                     let n;
                     {
-                        let x = socket.lock().await;
-                        match x.try_read(&mut buf) {
-                            Ok(e) => {
-                                debug!("Client read : {}", e);
-                                if e == 0 {
-                                    break;
-                                }
-                                n = e;
-                            }
-                            Err(e) => {
-                                // error!("{}", e);
-                                n = 0;
-                            }
-                        };
+                        n = forward_read.lock().await.read(&mut buf).await.unwrap();
+                        debug!("Client read : {}", n);
                     }
                     if let Err(e) = write.write(&buf[0..n]).await {
                         error!("{}", e);
