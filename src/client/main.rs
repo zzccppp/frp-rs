@@ -3,6 +3,7 @@ use std::{
     sync::Arc,
 };
 
+use crate::register::RegisterResponse;
 use initialization::{init_logger, read_configuration};
 use log::{debug, error, info};
 use register::register;
@@ -40,91 +41,22 @@ pub async fn main() -> Result<(), ()> {
             )
             .await
             {
-                let server_conn = match TcpSocket::new_v4().unwrap().connect(addr).await {
-                    Ok(e) => {
-                        info!("Connect Successfully on {}", target_addr_str);
-                        e
+                match resp {
+                    RegisterResponse::Succ { uuid } => {
+                        let uuid_bin = bincode::serialize(uuid).unwrap();
+                        let conn = TcpSocket::new_v4().unwrap().connect(target_addr_str).await;
+                        if let Ok(stream) = conn {
+                            stream.write(uuid_bin.as_slice()).await.unwrap();
+                            process(stream);
+                        } else {
+                            error!("Failed to connect target address:{}", target_addr_str);
+                        }
                     }
-                    Err(e) => {
-                        error!("Cannot connect {} : {}", target_addr_str, e);
-                        return;
+                    RegisterResponse::Failed { reason } => {
+                        error!("Failed to register: {}", reason);
                     }
-                };
-                let (server_read, server_write) = server_conn.into_split();
-                let server_read = Arc::new(Mutex::new(server_read));
-                let server_write = Arc::new(Mutex::new(server_write));
-                loop {
-                    let local_conn = match TcpSocket::new_v4().unwrap().connect(local_addr).await {
-                        Ok(e) => {
-                            info!("Connect Successfully on {}", local_addr_str);
-                            e
-                        }
-                        Err(e) => {
-                            error!("Cannot connect {} : {}", local_addr_str, e);
-                            return;
-                        }
-                    };
-                    let s_read = server_read.clone();
-                    let s_write = server_write.clone();
-                    // let (mut local_read, mut local_write) = local_conn.into_split();
-                    let local_socket = Arc::new(Mutex::new(local_conn));
-                    let local_socket1 = local_socket.clone();
-                    let h1 = tokio::spawn(async move {
-                        let socket = local_socket.clone();
-                        let mut buf = [0u8; 512];
-                        loop {
-                            let n = { s_read.lock().await.read(&mut buf).await.unwrap() };
-                            debug!("server read {}", n);
-                            if n == 0 {
-                                socket.lock().await.shutdown().await.unwrap();
-                                return;
-                            }
-                            if let Err(e) = socket.lock().await.write(&buf[0..n]).await {
-                                error!("{}",e);
-                                return;
-                            };
-                        }
-                    });
-                    let h2 = tokio::spawn(async move {
-                        let mut buf = [0u8; 512];
-                        let socket = local_socket1.clone();
-                        let mut n = 0;
-                        loop {
-                            // let n = socket.lock().await.read(&mut buf).await.unwrap();
-                            {
-                                if let Ok(e) = socket.lock().await.try_read(&mut buf) {
-                                    n = e;
-                                } else {
-                                    continue;
-                                }
-                            }
-                            debug!("local read {}", n);
-                            if n == 0 {
-                                socket.lock().await.shutdown().await.unwrap();
-                                return;
-                            }
-                            {
-                                s_write.lock().await.write(&buf[0..n]).await.unwrap();
-                                debug!("local write {}", n);
-                            }
-                        }
-                    });
-                    h2.await.unwrap();
-                    h1.await.unwrap();
                 }
-            };
-
-            // let _stream = if let Ok(socket) = TcpSocket::new_v4() {
-            //     let stream = socket.connect(addr).await;
-            //     if let Err(e) = stream {
-            //         error!("Cannot connect to {}", addr.to_string());
-            //         error!("{}", e.to_string());
-            //         return;
-            //     }
-            //     stream.unwrap();
-            // } else {
-            //     error!("Cannot create TcpSocket");
-            // };
+            }
         });
         handles.push(handle);
     }

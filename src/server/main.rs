@@ -1,4 +1,4 @@
-use std::{collections::HashMap, net::SocketAddr, sync::Arc, time::SystemTime};
+use std::{collections::HashMap, net::SocketAddr, str::FromStr, sync::Arc, time::SystemTime};
 
 use initialization::Config;
 use log::{debug, error, info, warn};
@@ -109,25 +109,57 @@ pub async fn process(
         }
     }
     let mut is_client_conn = false;
+    loop {
+        let (st, ad) = forward_listener.accept().await.unwrap();
+        let mut forward_socket: Arc<Mutex<TcpStream>> = Arc::new(Mutex::new(st));
 
-    let (st, ad) = forward_listener.accept().await.unwrap();
-    // let mut forward_socket: Arc<Mutex<TcpStream>> = Arc::new(Mutex::new(st));
-    // let (forward_read, forward_write) = st.into_split();
-    // let forward_read = Arc::new(Mutex::new(forward_read));
-    // let forward_write = Arc::new(Mutex::new(forward_write));
+        if ad.ip().eq(&addr.ip()) {
+            let mut buf = [0u8; 128];
+            let re = forward_socket.lock().await.read(&mut buf).await;
+            if let Ok(n) = re {
+                let receive_uuid_str: String = bincode::deserialize(&buf[0..n]).unwrap();
+                let receive_uuid = Uuid::parse_str(receive_uuid_str);
+                if let Ok(ruuid) = receive_uuid {
+                    if (receive_uuid.eq(&uuid)) {
+                        is_client_conn = true;
+                        handle_forawrd_connection();
+                    } else {
+                        info!(
+                            "Client send uuid: {} isn't match {}",
+                            receive_uuid_str,
+                            uuid.to_string()
+                            break;
+                        );
+                    }
+                } else {
+                    info!(
+                        "Client send uuid: {} isn't match {}",
+                        receive_uuid_str,
+                        uuid.to_string()
+                        break;
+                    );
+                }
+            } else {
+                forward_socket
+                    .lock()
+                    .await
+                    .write(b"Service Unavaliable.\n")
+                    .await
+                    .unwrap();
+                forward_socket.lock().await.shutdown().await.unwrap();
+            }
 
-    let mut forward_socket: Arc<Mutex<TcpStream>> = Arc::new(Mutex::new(st));
-
-    if ad.ip().eq(&addr.ip()) {
-        is_client_conn = true;
-    } else {
-        forward_socket
-            .lock()
-            .await
-            .write(b"Service Unavaliable.\n")
-            .await
-            .unwrap();
-        forward_socket.lock().await.shutdown().await.unwrap();
+            is_client_conn = true;
+            break;
+        } else {
+            forward_socket
+                .lock()
+                .await
+                .write(b"Service Unavaliable.\n")
+                .await
+                .unwrap();
+            forward_socket.lock().await.shutdown().await.unwrap();
+        }
     }
 
     loop {
