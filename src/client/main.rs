@@ -1,20 +1,28 @@
 use std::{
+    collections::HashMap,
     net::{SocketAddr, TcpListener},
     sync::Arc,
 };
 
 use crate::register::RegisterResponse;
+use bytes::BytesMut;
 use initialization::{init_logger, read_configuration};
 use log::{debug, error, info};
 use register::register;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpSocket, TcpStream},
-    sync::Mutex,
+    sync::{
+        mpsc::{self, UnboundedSender},
+        Mutex,
+    },
 };
+use transport::{process_forward_bytes, ForwardPackage};
+use uuid::Uuid;
 
 pub mod initialization;
 pub mod register;
+pub mod transport;
 
 #[tokio::main]
 pub async fn main() -> Result<(), ()> {
@@ -27,7 +35,7 @@ pub async fn main() -> Result<(), ()> {
         let client = client.clone();
         let target_addr_str =
             conf.server_ip.clone() + ":" + client.remote_port.to_string().as_str();
-        let addr: SocketAddr = target_addr_str.parse().unwrap();
+        let target_addr: SocketAddr = target_addr_str.parse().unwrap();
         let main_addr_str = conf.server_ip.clone() + ":" + conf.server_port.to_string().as_str();
         let local_addr_str = client.local_ip.clone() + ":" + client.local_port.to_string().as_str();
         let local_addr: SocketAddr = local_addr_str.parse().unwrap();
@@ -43,11 +51,18 @@ pub async fn main() -> Result<(), ()> {
             {
                 match resp {
                     RegisterResponse::Succ { uuid } => {
-                        let uuid_bin = bincode::serialize(uuid).unwrap();
-                        let conn = TcpSocket::new_v4().unwrap().connect(target_addr_str).await;
-                        if let Ok(stream) = conn {
+                        let uuid_bin = bincode::serialize(&uuid).unwrap();
+                        let conn = TcpSocket::new_v4().unwrap().connect(target_addr).await;
+                        if let Ok(mut stream) = conn {
                             stream.write(uuid_bin.as_slice()).await.unwrap();
-                            process(stream);
+                            let mut buf = [0u8; 64];
+                            let n = stream.read(&mut buf).await.unwrap();
+                            let resp_str: String = bincode::deserialize(&buf[0..n]).unwrap();
+                            if resp_str.eq("OK") {
+                                process(stream, local_addr).await;
+                            } else {
+                                error!("Connect Failed!");
+                            }
                         } else {
                             error!("Failed to connect target address:{}", target_addr_str);
                         }
@@ -66,7 +81,99 @@ pub async fn main() -> Result<(), ()> {
     return Ok(());
 }
 
-pub async fn process(mut socket: TcpStream) {
-    socket.write_all(b"123123123\n").await.unwrap();
-    // socket.write_i64(12345i64).await.unwrap();
+pub async fn process(mut socket: TcpStream, local_addr: SocketAddr) {
+    let (mut read, mut write) = socket.into_split();
+    let (sender, mut receiver) = mpsc::unbounded_channel::<ForwardPackage>();
+    let h1 = tokio::spawn(async move {
+        let mut buf = BytesMut::with_capacity(128);
+        let mut map: HashMap<Uuid, UnboundedSender<BytesMut>> = HashMap::new();
+        loop {
+            let re = read.read_buf(&mut buf).await;
+            if let Ok(n) = re {
+                if n != 0 {
+                    if let Some(packet) = process_forward_bytes(&mut buf) {
+                        debug!("Receive packets from proxy server : {:?}", packet);
+                        match packet {
+                            transport::ForwardPackage::Transport { uuid, data } => {
+                                let (tx, mut rx) = mpsc::unbounded_channel();
+                                if map.contains_key(&uuid) {
+                                    if let Err(e) = map.get(&uuid).unwrap().send(data) {
+                                        error!("forwarding data {} error", e);
+                                    }
+                                } else {
+                                    map.insert(uuid, tx);
+                                    //establish the conn to local addr
+                                    let conn =
+                                        TcpSocket::new_v4().unwrap().connect(local_addr).await;
+                                    if let Err(e) = conn {
+                                        error!(
+                                            "Cannot establish the conn to addr:{}, {}",
+                                            local_addr.to_string(),
+                                            e
+                                        );
+                                        continue;
+                                    }
+                                    let (mut read, mut write) = conn.unwrap().into_split();
+                                    tokio::spawn(async move {
+                                        while let Some(mut data) = rx.recv().await {
+                                            write.write(&mut data).await.unwrap();
+                                            debug!("WRITE--------WRITE");
+                                        }
+                                    });
+                                    let sender = sender.clone();
+                                    tokio::spawn(async move {
+                                        loop {
+                                            let mut buf = BytesMut::with_capacity(512);
+                                            match read.read_buf(&mut buf).await {
+                                                Ok(n) => {
+                                                    if n != 0 {
+                                                        sender
+                                                            .send(ForwardPackage::Transport {
+                                                                uuid,
+                                                                data: buf,
+                                                            })
+                                                            .unwrap();
+                                                    }
+                                                }
+                                                Err(e) => {
+                                                    error!("{}", e);
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                    });
+                                }
+                            }
+                            transport::ForwardPackage::HeartBeat { state } => {}
+                        }
+                    };
+                }
+            } else {
+                break;
+            }
+        }
+    });
+    let h2 = tokio::spawn(async move {
+        loop {
+            match receiver.recv().await {
+                Some(package) => {
+                    debug!("Send the package: {:?}", package);
+                    let bin = bincode::serialize(&package).unwrap();
+                    let packet_length = bin.len();
+                    //send the packet magic number (java .class magic number), and the data's length
+                    write.write_u32(0xCAFEBABE).await.unwrap(); //TODO: handle the error here
+                    write.write_u32(packet_length as u32).await.unwrap();
+                    if let Ok(_) = write.write_all(bin.as_slice()).await {
+                    } else {
+                        break;
+                    };
+                }
+                None => {
+                    break;
+                }
+            }
+        }
+    });
+    h1.await.unwrap();
+    h2.await.unwrap();
 }
