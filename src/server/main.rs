@@ -278,9 +278,10 @@ async fn handle_transport(
     let (tx, mut rx) = mpsc::unbounded_channel();
     map.lock().await.insert(uuid, tx);
     tokio::spawn(async move {
-        while let Some(data) = rx.recv().await {
-            debug!("send the data to browser {:?}", data);
-            write.write(&data).await.unwrap();
+        while let Some(mut data) = rx.recv().await {
+            while data.has_remaining() {
+                write.write_buf(&mut data).await.unwrap();
+            }
         }
     });
 }

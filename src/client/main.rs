@@ -5,7 +5,7 @@ use std::{
 };
 
 use crate::register::RegisterResponse;
-use bytes::BytesMut;
+use bytes::{Buf, BytesMut};
 use initialization::{init_logger, read_configuration};
 use log::{debug, error, info};
 use register::register;
@@ -102,6 +102,7 @@ pub async fn process(mut socket: TcpStream, local_addr: SocketAddr) {
                                     }
                                 } else {
                                     map.insert(uuid, tx);
+                                    map.get(&uuid).unwrap().send(data).unwrap();
                                     //establish the conn to local addr
                                     let conn =
                                         TcpSocket::new_v4().unwrap().connect(local_addr).await;
@@ -114,10 +115,13 @@ pub async fn process(mut socket: TcpStream, local_addr: SocketAddr) {
                                         continue;
                                     }
                                     let (mut read, mut write) = conn.unwrap().into_split();
+                                    debug!("Connect to local: {} succ", local_addr);
                                     tokio::spawn(async move {
                                         while let Some(mut data) = rx.recv().await {
-                                            write.write(&mut data).await.unwrap();
-                                            debug!("WRITE--------WRITE");
+                                            while data.has_remaining() {
+                                                info!("write data to:");
+                                                write.write_buf(&mut data).await.unwrap();
+                                            }
                                         }
                                     });
                                     let sender = sender.clone();
