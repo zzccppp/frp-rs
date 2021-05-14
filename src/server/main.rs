@@ -1,13 +1,24 @@
-use std::{collections::HashMap, net::SocketAddr, sync::Arc, time::SystemTime};
+use std::{
+    collections::{HashMap, VecDeque},
+    net::SocketAddr,
+    str::FromStr,
+    sync::Arc,
+    time::SystemTime,
+};
 
+use bytes::{Buf, BufMut, Bytes, BytesMut};
 use initialization::Config;
 use log::{debug, error, info, warn};
 use register::ConnectionState;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
-    sync::{oneshot, Mutex},
+    sync::{
+        mpsc::{self, UnboundedSender},
+        oneshot, Mutex,
+    },
 };
+use transport::{process_forward_bytes, ForwardPackage};
 use uuid::Uuid;
 
 use crate::{
@@ -17,6 +28,7 @@ use crate::{
 
 pub mod initialization;
 pub mod register;
+pub mod transport;
 
 #[tokio::main]
 pub async fn main() -> Result<(), ()> {
@@ -108,92 +120,168 @@ pub async fn process(
             error!("Write Register Response Error: {}", e);
         }
     }
-    let mut is_client_conn = false;
-
-    let (st, ad) = forward_listener.accept().await.unwrap();
-    // let mut forward_socket: Arc<Mutex<TcpStream>> = Arc::new(Mutex::new(st));
-    // let (forward_read, forward_write) = st.into_split();
-    // let forward_read = Arc::new(Mutex::new(forward_read));
-    // let forward_write = Arc::new(Mutex::new(forward_write));
-
-    let mut forward_socket: Arc<Mutex<TcpStream>> = Arc::new(Mutex::new(st));
-
-    if ad.ip().eq(&addr.ip()) {
-        is_client_conn = true;
-    } else {
-        forward_socket
-            .lock()
-            .await
-            .write(b"Service Unavaliable.\n")
-            .await
-            .unwrap();
-        forward_socket.lock().await.shutdown().await.unwrap();
-    }
-
     loop {
-        let (mut st, ad) = forward_listener.accept().await.unwrap();
-        if !is_client_conn {
-            st.write(b"Service Unavaliable.\n").await.unwrap();
-            st.shutdown().await.unwrap();
+        let (st, ad) = forward_listener.accept().await.unwrap();
+        let mut forward_socket = st;
+
+        if ad.ip().eq(&addr.ip()) {
+            let mut buf = [0u8; 128];
+            let re = forward_socket.read(&mut buf).await;
+            if let Ok(n) = re {
+                let receive_uuid_str: String = bincode::deserialize(&buf[0..n]).unwrap();
+                let receive_uuid = Uuid::parse_str(receive_uuid_str.as_str());
+                if let Ok(ruuid) = receive_uuid {
+                    if uuid.eq(&ruuid) {
+                        info!(
+                            "Client Connect forward port successfully with uuid: {} , name: {}",
+                            receive_uuid_str, find.name
+                        );
+                        forward_socket
+                            .write_all(bincode::serialize("OK").unwrap().as_ref())
+                            .await
+                            .unwrap();
+                        handle_forawrd_connection(forward_socket, forward_listener).await;
+                    } else {
+                        info!(
+                            "Client send uuid: {} isn't match {}",
+                            receive_uuid_str,
+                            uuid.to_string()
+                        );
+                        break;
+                    }
+                } else {
+                    info!(
+                        "Client send uuid: {} isn't match {}",
+                        receive_uuid_str,
+                        uuid.to_string()
+                    );
+                    break;
+                }
+            } else {
+                forward_socket
+                    .write(b"Service Unavaliable.\n")
+                    .await
+                    .unwrap();
+                forward_socket.shutdown().await.unwrap();
+            }
+            break;
         } else {
-            let forward_read = forward_socket.clone();
-            let forward_write = forward_socket.clone();
-            // let (mut read, mut write) = st.into_split();
-            let socket = Arc::new(Mutex::new(st));
-            let socket1 = socket.clone();
-            tokio::spawn(async move {
-                let mut buf = [0u8; 512];
-                let socket = socket.clone();
-                let mut n = 0;
-                loop {
-                    // let n = read.read(&mut buf).await.unwrap();
-                    {
-                        if let Ok(e) = socket.lock().await.try_read(&mut buf) {
-                            n = e;
-                        } else {
-                            continue;
-                        }
-                    }
-                    debug!("Request read : {}", n);
-                    if n == 0 {
-                        socket.lock().await.shutdown().await.unwrap();
-                        break;
-                    }
-                    {
-                        // let mut x = socket.lock().await;
-                        // x.write(&buf[0..n]).await.unwrap();
-                        forward_write.lock().await.write(&buf[0..n]).await.unwrap();
-                    }
-                }
-            });
-            // let socket = forward_socket.clone();
-            tokio::spawn(async move {
-                let mut buf = [0u8; 512];
-                let socket = socket1.clone();
-                loop {
-                    let mut n = 0;
-                    {
-                        // n = forward_read.lock().await.read(&mut buf).await.unwrap();
-                        if let Ok(e) = forward_read.lock().await.try_read(&mut buf) {
-                            n = e;
-                        } else {
-                            continue;
-                        }
-                    }
-                    debug!("Client read : {}", n);
-                    if n == 0 {
-                        socket.lock().await.shutdown().await.unwrap();
-                        break;
-                    }
-                    // if let Err(e) = write.write(&buf[0..n]).await {
-                    //     error!("{}", e);
-                    //     return;
-                    // };
-                    {
-                        socket.lock().await.write(&buf[0..n]).await.unwrap();
-                    }
-                }
-            });
+            forward_socket
+                .write(b"Service Unavaliable.\n")
+                .await
+                .unwrap();
+            forward_socket.shutdown().await.unwrap();
         }
     }
+}
+
+async fn handle_forawrd_connection(
+    mut forward_socket: TcpStream,
+    mut forward_listener: TcpListener,
+) {
+    let mut map: HashMap<Uuid, UnboundedSender<BytesMut>> = HashMap::new();
+    let mut map = Arc::new(Mutex::new(map));
+
+    let (sender, mut receiver) = mpsc::unbounded_channel::<ForwardPackage>();
+
+    let (mut read, mut write) = forward_socket.into_split();
+
+    tokio::spawn(async move {
+        // this task is used for sent the packets
+        loop {
+            match receiver.recv().await {
+                Some(package) => {
+                    debug!("Send the package: {:?}", package);
+                    let bin = bincode::serialize(&package).unwrap();
+                    let packet_length = bin.len();
+                    //send the packet magic number (java .class magic number), and the data's length
+                    write.write_u32(0xCAFEBABE).await.unwrap(); //TODO: handle the error here
+                    write.write_u32(packet_length as u32).await.unwrap();
+                    if let Ok(_) = write.write_all(bin.as_slice()).await {
+                    } else {
+                        break;
+                    };
+                }
+                None => {
+                    break;
+                }
+            }
+        }
+    });
+
+    let mm = map.clone();
+
+    tokio::spawn(async move {
+        let mut buf = BytesMut::with_capacity(128);
+        let map = mm;
+        loop {
+            let re = read.read_buf(&mut buf).await;
+            if let Ok(n) = re {
+                if n != 0 {
+                    if let Some(packet) = process_forward_bytes(&mut buf) {
+                        debug!("Receive the packet {:?}", packet);
+                        match packet {
+                            ForwardPackage::Transport { uuid, data } => {
+                                if let Some(e) = map.lock().await.get(&uuid) {
+                                    if let Err(e) = e.send(data) {
+                                        error!("{}", e);
+                                    };
+                                } else {
+                                    error!("Cannot find the receiver");
+                                }
+                            }
+                            ForwardPackage::HeartBeat { state } => {}
+                        }
+                    }
+                }
+            } else {
+                break;
+            }
+        }
+    });
+
+    loop {
+        let (stream, addr) = forward_listener.accept().await.unwrap();
+        handle_transport(stream, map.clone(), sender.clone()).await;
+    }
+}
+
+async fn handle_transport(
+    stream: TcpStream,
+    map: Arc<Mutex<HashMap<Uuid, UnboundedSender<BytesMut>>>>,
+    sender: UnboundedSender<ForwardPackage>,
+) {
+    let uuid = Uuid::new_v4();
+
+    let (mut read, mut write) = stream.into_split();
+
+    tokio::spawn(async move {
+        let uuid = uuid.clone();
+        let mut buf = [0u8; 512];
+        loop {
+            match read.read(&mut buf).await {
+                Ok(n) => {
+                    if n != 0 {
+                        let mut bytes = BytesMut::with_capacity(512);
+                        bytes.put(&buf[0..n]);
+                        let packet = ForwardPackage::Transport { uuid, data: bytes };
+                        sender.send(packet).unwrap();
+                    }
+                }
+                Err(e) => {
+                    error!("{}", e);
+                    break;
+                }
+            }
+        }
+    });
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    map.lock().await.insert(uuid, tx);
+    tokio::spawn(async move {
+        while let Some(mut data) = rx.recv().await {
+            while data.has_remaining() {
+                write.write_buf(&mut data).await.unwrap();
+            }
+        }
+    });
 }
