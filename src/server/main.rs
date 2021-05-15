@@ -218,7 +218,7 @@ async fn handle_forawrd_connection(
             let re = read.read_buf(&mut buf).await;
             if let Ok(n) = re {
                 if n != 0 {
-                    if let Some(packet) = process_forward_bytes(&mut buf) {
+                    while let Some(packet) = process_forward_bytes(&mut buf) {
                         debug!("Receive the packet {:?}", packet);
                         match packet {
                             ForwardPackage::Transport { uuid, data } => {

@@ -91,7 +91,7 @@ pub async fn process(mut socket: TcpStream, local_addr: SocketAddr) {
             let re = read.read_buf(&mut buf).await;
             if let Ok(n) = re {
                 if n != 0 {
-                    if let Some(packet) = process_forward_bytes(&mut buf) {
+                    while let Some(packet) = process_forward_bytes(&mut buf) {
                         debug!("Receive packets from proxy server : {:?}", packet);
                         match packet {
                             transport::ForwardPackage::Transport { uuid, data } => {
