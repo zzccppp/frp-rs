@@ -21,7 +21,7 @@ pub fn process_forward_bytes(buf: &mut BytesMut) -> Option<ForwardPackage> {
         if buf.len() > 8 {
             let size = buf.get(4..8).unwrap();
             let size = size.clone().get_u32();
-            if buf.len() + 8 > size as usize {
+            if buf.len() >= (size + 8) as usize {
                 let mut ret = buf.split_to(size as usize + 8);
                 ret.advance(8);
                 if let Ok(packet) = bincode::deserialize::<ForwardPackage>(ret.chunk()) {

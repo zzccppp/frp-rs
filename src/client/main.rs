@@ -137,6 +137,8 @@ pub async fn process(mut socket: TcpStream, local_addr: SocketAddr) {
                                                                 data: buf,
                                                             })
                                                             .unwrap();
+                                                    } else {
+                                                        break;
                                                     }
                                                 }
                                                 Err(e) => {
@@ -150,7 +152,9 @@ pub async fn process(mut socket: TcpStream, local_addr: SocketAddr) {
                             }
                             transport::ForwardPackage::HeartBeat { state } => {}
                         }
-                    };
+                    }
+                } else {
+                    break;
                 }
             } else {
                 break;

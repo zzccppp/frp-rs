@@ -233,6 +233,8 @@ async fn handle_forawrd_connection(
                             ForwardPackage::HeartBeat { state } => {}
                         }
                     }
+                } else {
+                    break;
                 }
             } else {
                 break;
@@ -266,6 +268,8 @@ async fn handle_transport(
                         bytes.put(&buf[0..n]);
                         let packet = ForwardPackage::Transport { uuid, data: bytes };
                         sender.send(packet).unwrap();
+                    } else {
+                        break;
                     }
                 }
                 Err(e) => {
