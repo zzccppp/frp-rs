@@ -1,8 +1,4 @@
-use std::{
-    collections::HashMap,
-    net::{SocketAddr, TcpListener},
-    sync::Arc,
-};
+use std::{collections::HashMap, net::SocketAddr};
 
 use crate::register::RegisterResponse;
 use bytes::{Buf, BytesMut};
@@ -12,10 +8,7 @@ use register::register;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpSocket, TcpStream},
-    sync::{
-        mpsc::{self, UnboundedSender},
-        Mutex,
-    },
+    sync::mpsc::{self, UnboundedSender},
 };
 use transport::{process_forward_bytes, ForwardPackage};
 use uuid::Uuid;
@@ -81,7 +74,7 @@ pub async fn main() -> Result<(), ()> {
     return Ok(());
 }
 
-pub async fn process(mut socket: TcpStream, local_addr: SocketAddr) {
+pub async fn process(socket: TcpStream, local_addr: SocketAddr) {
     let (mut read, mut write) = socket.into_split();
     let (sender, mut receiver) = mpsc::unbounded_channel::<ForwardPackage>();
     let h1 = tokio::spawn(async move {
@@ -150,7 +143,9 @@ pub async fn process(mut socket: TcpStream, local_addr: SocketAddr) {
                                     });
                                 }
                             }
-                            transport::ForwardPackage::HeartBeat { state } => {}
+                            transport::ForwardPackage::HeartBeat { state } => {
+                                panic!("Unimplemented! {}", state);
+                            }
                         }
                     }
                 } else {

@@ -1,16 +1,11 @@
-use bytes::{Buf, Bytes, BytesMut};
+use bytes::{Buf, BytesMut};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub enum ForwardPackage {
-    Transport {
-        uuid: Uuid,
-        data: BytesMut,
-    }, 
-    HeartBeat{
-        state: u32
-    }
+    Transport { uuid: Uuid, data: BytesMut },
+    HeartBeat { state: u32 },
 }
 
 pub fn process_forward_bytes(buf: &mut BytesMut) -> Option<ForwardPackage> {

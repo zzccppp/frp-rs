@@ -1,4 +1,4 @@
-use bytes::{Buf, Bytes, BytesMut};
+use bytes::{Buf, BytesMut};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 

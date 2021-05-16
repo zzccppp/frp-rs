@@ -1,21 +1,15 @@
-use std::{
-    collections::{HashMap, VecDeque},
-    net::SocketAddr,
-    str::FromStr,
-    sync::Arc,
-    time::SystemTime,
-};
+use std::{collections::HashMap, net::SocketAddr, sync::Arc, time::SystemTime};
 
-use bytes::{Buf, BufMut, Bytes, BytesMut};
+use bytes::{Buf, BufMut, BytesMut};
 use initialization::Config;
-use log::{debug, error, info, warn};
+use log::{debug, error, info};
 use register::ConnectionState;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
     sync::{
         mpsc::{self, UnboundedSender},
-        oneshot, Mutex,
+        Mutex,
     },
 };
 use transport::{process_forward_bytes, ForwardPackage};
@@ -175,12 +169,9 @@ pub async fn process(
     }
 }
 
-async fn handle_forawrd_connection(
-    mut forward_socket: TcpStream,
-    mut forward_listener: TcpListener,
-) {
-    let mut map: HashMap<Uuid, UnboundedSender<BytesMut>> = HashMap::new();
-    let mut map = Arc::new(Mutex::new(map));
+async fn handle_forawrd_connection(forward_socket: TcpStream, forward_listener: TcpListener) {
+    let map: HashMap<Uuid, UnboundedSender<BytesMut>> = HashMap::new();
+    let map = Arc::new(Mutex::new(map));
 
     let (sender, mut receiver) = mpsc::unbounded_channel::<ForwardPackage>();
 
@@ -230,7 +221,9 @@ async fn handle_forawrd_connection(
                                     error!("Cannot find the receiver");
                                 }
                             }
-                            ForwardPackage::HeartBeat { state } => {}
+                            ForwardPackage::HeartBeat { state } => {
+                                panic!("Unimplemented! {}", state);
+                            }
                         }
                     }
                 } else {
@@ -243,7 +236,7 @@ async fn handle_forawrd_connection(
     });
 
     loop {
-        let (stream, addr) = forward_listener.accept().await.unwrap();
+        let (stream, _addr) = forward_listener.accept().await.unwrap();
         handle_transport(stream, map.clone(), sender.clone()).await;
     }
 }

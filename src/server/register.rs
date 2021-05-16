@@ -1,6 +1,4 @@
-use log::error;
 use serde::{Deserialize, Serialize};
-use tokio::net::TcpSocket;
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ClientRegisterMessage {
@@ -11,12 +9,8 @@ pub struct ClientRegisterMessage {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub enum RegisterResponse {
-    Succ{
-        uuid: String
-    },
-    Failed{
-        reason: String
-    }
+    Succ { uuid: String },
+    Failed { reason: String },
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ConnectionState {
